@@ -1446,8 +1446,8 @@ Examples:
     # Performance
     perf_group = parser.add_argument_group('Performance optimization')
     perf_group.add_argument("--attention_mode", type=str, default="sdpa",
-                        choices=["sdpa", "flash_attn_2", "flash_attn_3", "sageattn_2", "sageattn_3"],
-                        help="Attention backend: 'sdpa' (default), 'flash_attn_2', 'flash_attn_3', 'sageattn_2', or 'sageattn_3' (Blackwell GPUs)")
+                        choices=["sdpa", "XB 内置模式 A (128x128x32)", "XB 内置模式 B (128x64x96)", "XB 内置模式 C (128x16x16)", "XB 内置模式 D (64x64x16)", "XB 自定模式 A (机智启动器)", "XB 自定模式 B (机智启动器)", "XB 自定模式 C (机智启动器)"],
+                        help="Attention backend: 'sdpa' (default) or XB_ToolBox SageAttention presets")
     perf_group.add_argument("--compile_dit", action="store_true", 
                         help="Enable torch.compile for DiT model (20-40%% speedup, requires PyTorch 2.0+ and Triton)")
     perf_group.add_argument("--compile_vae", action="store_true",
