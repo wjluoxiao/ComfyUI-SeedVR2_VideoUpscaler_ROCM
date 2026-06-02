@@ -220,13 +220,12 @@ def apply_block_swap_to_dit(
     effective_blocks = min(blocks_to_swap, total_blocks) if blocks_to_swap > 0 else 0
     
     # Log configuration clearly based on what's enabled
-    block_text = "block" if effective_blocks <= 1 else "blocks"
     if effective_blocks > 0 and swap_io_components:
-        debug.log(f"BlockSwap: {effective_blocks}/{total_blocks} transformer {block_text} + I/O components offloaded to {str(offload_device).upper()}", category="blockswap", force=True)
+        debug.log(f"BlockSwap: {effective_blocks}/{total_blocks} 个Transformer块 + I/O组件 已卸载到 {str(offload_device).upper()}", category="blockswap", force=True)
     elif effective_blocks > 0:
-        debug.log(f"BlockSwap: {effective_blocks}/{total_blocks} transformer {block_text} offloaded to {str(offload_device).upper()}", category="blockswap", force=True)
+        debug.log(f"BlockSwap: {effective_blocks}/{total_blocks} 个Transformer块 已卸载到 {str(offload_device).upper()}", category="blockswap", force=True)
     elif swap_io_components:
-        debug.log(f"BlockSwap: I/O components offloaded to {str(offload_device).upper()} (0/{total_blocks} blocks swapped)", category="blockswap", force=True)
+        debug.log(f"BlockSwap: I/O组件 已卸载到 {str(offload_device).upper()} (0/{total_blocks} 块未交换)", category="blockswap", force=True)
     
     # Configure model with blockswap attributes
     if blocks_to_swap > 0:

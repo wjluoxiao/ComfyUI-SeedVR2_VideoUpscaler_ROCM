@@ -33,54 +33,6 @@ def ensure_triton_compat():
     sys.modules['triton.ops.matmul_perf_model'] = matmul_perf
 
 
-def ensure_flash_attn_safe():
-    """
-    Pre-test flash_attn package; stub if DLL is broken.
-    Prevents diffusers from crashing when flash_attn has broken DLLs.
-    """
-    if 'flash_attn' in sys.modules:
-        return  # Already loaded
-    
-    try:
-        import flash_attn
-    except (ImportError, OSError):
-        # DLL broken or not installed - create stub with proper __spec__
-        stub = types.ModuleType('flash_attn')
-        stub.__spec__ = importlib.machinery.ModuleSpec('flash_attn', None)
-        stub.__file__ = None
-        stub.__path__ = []
-        stub.__loader__ = None
-        # Provide attributes that diffusers/transformers import
-        stub.flash_attn_func = None
-        stub.flash_attn_varlen_func = None
-        sys.modules['flash_attn'] = stub
-
-
-def ensure_xformers_flash_compat():
-    """
-    Pre-test xformers._C_flashattention; stub if DLL is broken.
-    Prevents xformers.ops.fmha.flash from crashing on import.
-    """
-    if 'xformers._C_flashattention' in sys.modules:
-        return  # Already loaded
-    
-    try:
-        from xformers import _C_flashattention  # noqa: F401
-    except (ImportError, OSError):
-        # DLL broken or not installed - create stub with proper __spec__
-        class _FailingStub(types.ModuleType):
-            """Stub that lets xformers gracefully disable its flash backend."""
-            def __getattr__(self, name):
-                raise ImportError("_C_flashattention unavailable")
-        
-        stub = _FailingStub('xformers._C_flashattention')
-        stub.__spec__ = importlib.machinery.ModuleSpec('xformers._C_flashattention', None)
-        stub.__file__ = None
-        stub.__path__ = []
-        stub.__loader__ = None
-        sys.modules['xformers._C_flashattention'] = stub
-
-
 def ensure_bitsandbytes_safe():
     """
     Pre-test bitsandbytes; stub if broken to prevent import conflicts.
@@ -110,8 +62,6 @@ def ensure_bitsandbytes_safe():
 
 # Run all shims immediately on import, before torch/diffusers
 ensure_triton_compat()
-ensure_flash_attn_safe()
-ensure_xformers_flash_compat()
 ensure_bitsandbytes_safe()
 
 
@@ -119,37 +69,27 @@ import torch
 import os
 
 
-# Flash/Sage Attention & Triton Compatibility Layer
+# SageAttention & Triton Compatibility Layer
 
-# 1. Flash Attention 3 (Hopper+, faster, no dropout/window support)
-flash_attn_3_varlen_func = None
-FLASH_ATTN_3_AVAILABLE = False
+# patch: SageAttention1 （varlen_support）
+sageattn_1_varlen_func = None
+SAGE_ATTN_1_AVAILABLE = False
 try:
-    import flash_attn_interface
-    flash_attn_3_varlen_func = flash_attn_interface.flash_attn_varlen_func
-    FLASH_ATTN_3_AVAILABLE = True
+    try:
+        from sageattention import sageattn_varlen as _sa1_varlen
+    except ImportError:
+        from sageattn import sageattn_varlen as _sa1_varlen
+    sageattn_1_varlen_func = _sa1_varlen
+    SAGE_ATTN_1_AVAILABLE = True
 except (ImportError, AttributeError, OSError):
     pass
-
-# 2. Flash Attention 2 (wider compatibility, supports dropout/window)
-flash_attn_2_varlen_func = None
-FLASH_ATTN_2_AVAILABLE = False
-try:
-    from flash_attn import flash_attn_varlen_func as _fa2_varlen
-    import flash_attn_2_cuda  # noqa: F401
-    flash_attn_2_varlen_func = _fa2_varlen
-    FLASH_ATTN_2_AVAILABLE = True
-except (ImportError, AttributeError, OSError):
-    pass
-
-FLASH_ATTN_AVAILABLE = FLASH_ATTN_2_AVAILABLE or FLASH_ATTN_3_AVAILABLE
 
 # 3. SageAttention 2 (varlen support)
-sageattn_varlen = None
+sageattn_2_varlen_func = None
 SAGE_ATTN_2_AVAILABLE = False
 try:
     from sageattention import sageattn_varlen as _sa2_varlen
-    sageattn_varlen = _sa2_varlen
+    sageattn_2_varlen_func = _sa2_varlen
     SAGE_ATTN_2_AVAILABLE = True
 except (ImportError, AttributeError, OSError):
     pass
@@ -169,257 +109,179 @@ except (ImportError, AttributeError, OSError):
     except (ImportError, AttributeError, OSError):
         pass
 
-SAGE_ATTN_AVAILABLE = SAGE_ATTN_2_AVAILABLE or SAGE_ATTN_3_AVAILABLE
+SAGE_ATTN_AVAILABLE = SAGE_ATTN_1_AVAILABLE or SAGE_ATTN_2_AVAILABLE or SAGE_ATTN_3_AVAILABLE
+
+
+def get_best_sage_varlen():
+    """Return the best available SageAttention varlen function.
+    Priority: SA2 (fastest CUDA) > SA1 (Triton, works on AMD ROCm)
+    Returns (func, version_str) or (None, None) if none available."""
+    if SAGE_ATTN_2_AVAILABLE:
+        return call_sage_attn_2_varlen, '2'
+    if SAGE_ATTN_1_AVAILABLE:
+        return call_sage_attn_1_varlen, '1'
+    return None, None
+
+
+# XB_ToolBox SageAttention preset configurations
+XB_SAGE_PRESETS = {
+    "XB 内置模式 A (128x128x32)": {'M': 128,  'N': 128, 'GROUP': 32, 'WAVE': 2, 'WARP': 8, 'NSTAGES': 1},
+    "XB 内置模式 B (128x64x96)": {'M': 128,  'N': 64, 'GROUP': 96, 'WAVE': 3, 'WARP': 8, 'NSTAGES': 2},
+    "XB 内置模式 C (128x16x16)": {'M': 128,  'N': 16, 'GROUP': 16, 'WAVE': 2, 'WARP': 4, 'NSTAGES': 2},
+    "XB 内置模式 D (64x64x16)":  {'M': 64,   'N': 64, 'GROUP': 16, 'WAVE': 4, 'WARP': 4, 'NSTAGES': 2},
+    "XB 自定模式 A (机智启动器)": {'M': 128, 'N': 128, 'GROUP': 32, 'WAVE': 4, 'WARP': 8, 'NSTAGES': 1},
+    "XB 自定模式 B (机智启动器)": {'M': 128, 'N': 64, 'GROUP': 8, 'WAVE': 2, 'WARP': 8, 'NSTAGES': 2},
+    "XB 自定模式 C (机智启动器)": {'M': 64, 'N': 64, 'GROUP': 16, 'WAVE': 1, 'WARP': 4, 'NSTAGES': 2},
+}
+
+# Check if XB_ToolBox is available (by detecting its folder in custom_nodes)
+_XB_TOOLBOX_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))), "XB_ToolBox")
+XB_TOOLBOX_AVAILABLE = os.path.isdir(_XB_TOOLBOX_PATH)
 
 
 def validate_attention_mode(requested_mode: str, debug=None) -> str:
     """
     Validate attention mode availability with automatic fallback.
+    Now uses XB_ToolBox preset names for SageAttention modes.
     
     Args:
-        requested_mode: 'sdpa', 'flash_attn_2', 'flash_attn_3', 'sageattn_2', or 'sageattn_3'
+        requested_mode: 'sdpa' or one of XB_ToolBox preset names
         debug: Optional debug instance for logging
         
     Returns:
         Validated mode that is available
     """
-    # Flash Attention 3
-    if requested_mode == 'flash_attn_3':
-        if FLASH_ATTN_3_AVAILABLE:
-            return requested_mode
-        if FLASH_ATTN_2_AVAILABLE:
+    # PyTorch SDPA - always available
+    if requested_mode == 'sdpa':
+        return requested_mode
+    
+    # XB_ToolBox SageAttention presets
+    if requested_mode in XB_SAGE_PRESETS:
+        if not XB_TOOLBOX_AVAILABLE:
+            error_msg = (
+                f"Cannot use '{requested_mode}' attention mode: XB_ToolBox is not installed.\n"
+                "\n"
+                "XB_ToolBox provides SageAttention acceleration through optimized kernel presets.\n"
+                "Falling back to PyTorch SDPA (scaled dot-product attention).\n"
+                "\n"
+                "To fix this issue:\n"
+                "  1. Install XB_ToolBox custom node in ComfyUI\n"
+                "  2. OR change attention_mode to 'sdpa' (default, always available)\n"
+            )
             if debug:
-                debug.log(
-                    "Flash Attention 3 not available (requires Hopper+ GPU and flash-attn with FA3 support).\n"
-                    "Falling back to Flash Attention 2.",
-                    level="WARNING", category="setup", force=True
-                )
-            return 'flash_attn_2'
-        error_msg = (
-            "Cannot use 'flash_attn_3' attention mode: Flash Attention is not installed.\n"
-            "\n"
-            "Flash Attention 3 provides maximum speedup on Hopper+ GPUs through optimized CUDA kernels.\n"
-            "Falling back to PyTorch SDPA (scaled dot-product attention).\n"
-            "\n"
-            "To fix this issue:\n"
-            "  1. Install Flash Attention: pip install flash-attn\n"
-            "  2. OR change attention_mode to 'sdpa' (default, always available)\n"
-            "\n"
-            "For more info: https://github.com/Dao-AILab/flash-attention"
-        )
-        if debug:
-            debug.log(error_msg, level="WARNING", category="setup", force=True)
-        return 'sdpa'
-    
-    # Flash Attention 2
-    if requested_mode == 'flash_attn_2':
-        if FLASH_ATTN_2_AVAILABLE:
-            return requested_mode
-        error_msg = (
-            "Cannot use 'flash_attn_2' attention mode: Flash Attention 2 is not installed.\n"
-            "\n"
-            "Flash Attention 2 provides speedup on Ampere+ GPUs through optimized CUDA kernels.\n"
-            "Falling back to PyTorch SDPA (scaled dot-product attention).\n"
-            "\n"
-            "To fix this issue:\n"
-            "  1. Install Flash Attention: pip install flash-attn\n"
-            "  2. OR change attention_mode to 'sdpa' (default, always available)\n"
-            "\n"
-            "For more info: https://github.com/Dao-AILab/flash-attention"
-        )
-        if debug:
-            debug.log(error_msg, level="WARNING", category="setup", force=True)
-        return 'sdpa'
-    
-    # SageAttention 3 (Blackwell)
-    if requested_mode == 'sageattn_3':
-        if SAGE_ATTN_3_AVAILABLE:
-            return requested_mode
-        if SAGE_ATTN_2_AVAILABLE:
+                debug.log(error_msg, level="WARNING", category="setup", force=True)
+            return 'sdpa'
+        
+        # Verify sageattention package is installed
+        if not SAGE_ATTN_AVAILABLE:
+            error_msg = (
+                f"Cannot use '{requested_mode}' attention mode: SageAttention package is not installed.\n"
+                "\n"
+                "SageAttention provides GPU acceleration for attention computations.\n"
+                "Falling back to PyTorch SDPA (scaled dot-product attention).\n"
+                "\n"
+                "To fix this issue:\n"
+                "  1. Install SageAttention: pip install sageattention\n"
+                "  2. OR change attention_mode to 'sdpa' (default, always available)\n"
+                "\n"
+                "For more info: https://github.com/thu-ml/SageAttention"
+            )
             if debug:
-                debug.log(
-                    "SageAttention 3 (Blackwell) not available (requires RTX 50xx GPU and sageattn3 package).\n"
-                    "Falling back to SageAttention 2.",
-                    level="WARNING", category="setup", force=True
-                )
-            return 'sageattn_2'
-        error_msg = (
-            "Cannot use 'sageattn_3' attention mode: SageAttention is not installed.\n"
-            "\n"
-            "SageAttention 3 provides maximum speedup on Blackwell (RTX 50xx) GPUs.\n"
-            "Falling back to PyTorch SDPA (scaled dot-product attention).\n"
-            "\n"
-            "To fix this issue:\n"
-            "  1. Install SageAttention: pip install sageattention\n"
-            "  2. For SA3 Blackwell support: pip install sageattn3\n"
-            "  3. OR change attention_mode to 'flash_attn_2' or 'sdpa'\n"
-            "\n"
-            "For more info: https://github.com/thu-ml/SageAttention"
-        )
-        if debug:
-            debug.log(error_msg, level="WARNING", category="setup", force=True)
-        return 'sdpa'
+                debug.log(error_msg, level="WARNING", category="setup", force=True)
+            return 'sdpa'
+        
+        return requested_mode
     
-    # SageAttention 2
-    if requested_mode == 'sageattn_2':
-        if SAGE_ATTN_2_AVAILABLE:
-            return requested_mode
-        error_msg = (
-            "Cannot use 'sageattn_2' attention mode: SageAttention is not installed.\n"
-            "\n"
-            "SageAttention provides speedup on NVIDIA GPUs through optimized CUDA kernels.\n"
-            "Falling back to PyTorch SDPA (scaled dot-product attention).\n"
-            "\n"
-            "To fix this issue:\n"
-            "  1. Install SageAttention: pip install sageattention\n"
-            "  2. OR change attention_mode to 'flash_attn_2' or 'sdpa'\n"
-            "\n"
-            "For more info: https://github.com/thu-ml/SageAttention"
+    # Unknown mode - fallback to sdpa
+    if debug:
+        debug.log(
+            f"Unknown attention mode '{requested_mode}'. Falling back to 'sdpa'.",
+            level="WARNING", category="setup", force=True
         )
-        if debug:
-            debug.log(error_msg, level="WARNING", category="setup", force=True)
-        return 'sdpa'
-    
-    return requested_mode
+    return 'sdpa'
 
 
-@torch._dynamo.disable
-def call_flash_attn_2_varlen(q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k, **kwargs):
+def get_sage_config_for_mode(attention_mode: str) -> dict:
     """
-    Wrapper for Flash Attention 2 flash_attn_varlen_func that handles tensor-to-scalar conversion.
-    
-    Flash Attention 2 supports dropout_p and window_size parameters.
-    Works on Ampere+ GPUs (RTX 30xx, 40xx, A100, etc.).
-    
-    This function is excluded from torch.compile because:
-    1. flash_attn is a C++ extension that can't be compiled anyway
-    2. It requires Python int scalars for max_seqlen parameters
-    3. Disabling compilation here keeps the rest of the model compilable
+    Get SageAttention kernel config for a given attention mode.
     
     Args:
-        q: Query tensor (total_seq, heads, head_dim)
-        k: Key tensor (total_seq, heads, head_dim)
-        v: Value tensor (total_seq, heads, head_dim)
-        cu_seqlens_q: Cumulative sequence lengths for queries
-        cu_seqlens_k: Cumulative sequence lengths for keys
-        max_seqlen_q: Maximum query sequence length (can be tensor or int)
-        max_seqlen_k: Maximum key sequence length (can be tensor or int)
-        **kwargs: Additional arguments (dropout_p, softmax_scale, causal, window_size, deterministic)
+        attention_mode: Attention mode string (XB_ToolBox preset name)
         
     Returns:
-        Attention output tensor (total_seq, heads, head_dim)
+        SageAttention config dict, or None if not a SageAttention mode
     """
-    if not FLASH_ATTN_2_AVAILABLE:
-        raise ImportError("Flash Attention 2 is not available")
+    return XB_SAGE_PRESETS.get(attention_mode, None)
+
     
-    # Convert tensor max_seqlen to Python int if needed
+@torch._dynamo.disable
+def call_sage_attn_1_varlen(q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k, sage_config=None, **kwargs):
+    """
+    Wrapper for SageAttention 1 sageattn_varlen that handles tensor-to-scalar conversion.
+    
+    SageAttention 1 provides optimized int8-quantized attention for NVIDIA GPUs.
+    Note: Sage1 varlen only supports head_dim 64 and 128.
+    
+    Args:
+        sage_config: Optional XB_ToolBox SageAttention kernel config dict (M, N, GROUP, WAVE, WARP, NSTAGES)
+    """
+    if not SAGE_ATTN_1_AVAILABLE:
+        raise ImportError("SageAttention 1 is not available")
+    
     if torch.is_tensor(max_seqlen_q):
         max_seqlen_q = int(max_seqlen_q.item())
     if torch.is_tensor(max_seqlen_k):
         max_seqlen_k = int(max_seqlen_k.item())
     
-    return flash_attn_2_varlen_func(
-        q=q,
-        k=k,
-        v=v,
-        cu_seqlens_q=cu_seqlens_q,
-        cu_seqlens_k=cu_seqlens_k,
-        max_seqlen_q=max_seqlen_q,
-        max_seqlen_k=max_seqlen_k,
-        **kwargs
-    )
+    head_dim = q.shape[-1]
+    if head_dim not in [64, 128]:
+        raise ValueError(f"SageAttention 1 varlen only supports head_dim 64 or 128, but got {head_dim}")
 
-
-@torch._dynamo.disable
-def call_flash_attn_3_varlen(q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k, **kwargs):
-    """
-    Wrapper for Flash Attention 3 flash_attn_varlen_func that handles tensor-to-scalar conversion.
+    out_dtype = q.dtype
+    valid_dtypes = (torch.float16, torch.bfloat16, torch.float32)
     
-    Flash Attention 3 is faster than FA2 but does NOT support dropout_p and window_size.
-    Works on Hopper+ GPUs (H100, etc.) - requires flash_attn_interface package.
+    if not (q.dtype == k.dtype == v.dtype):
+        k = k.to(q.dtype)
+        v = v.to(q.dtype)
     
-    This function is excluded from torch.compile because:
-    1. flash_attn is a C++ extension that can't be compiled anyway
-    2. It requires Python int scalars for max_seqlen parameters
-    3. Disabling compilation here keeps the rest of the model compilable
+    if q.dtype not in valid_dtypes:
+        q = q.to(torch.bfloat16)
+        k = k.to(torch.bfloat16)
+        v = v.to(torch.bfloat16)
     
-    Args:
-        q: Query tensor (total_seq, heads, head_dim)
-        k: Key tensor (total_seq, heads, head_dim)
-        v: Value tensor (total_seq, heads, head_dim)
-        cu_seqlens_q: Cumulative sequence lengths for queries
-        cu_seqlens_k: Cumulative sequence lengths for keys
-        max_seqlen_q: Maximum query sequence length (can be tensor or int)
-        max_seqlen_k: Maximum key sequence length (can be tensor or int)
-        **kwargs: Additional arguments (softmax_scale, causal, deterministic)
-                  Note: dropout_p and window_size are ignored (not supported by FA3)
-        
-    Returns:
-        Attention output tensor (total_seq, heads, head_dim)
-    """
-    if not FLASH_ATTN_3_AVAILABLE:
-        raise ImportError("Flash Attention 3 is not available")
+    is_causal = kwargs.get('causal', False)
+    smooth_k = kwargs.get('smooth_k', True)
+    sm_scale = kwargs.get('sm_scale', 1.0 / (head_dim ** 0.5))
     
-    # Convert tensor max_seqlen to Python int if needed
-    if torch.is_tensor(max_seqlen_q):
-        max_seqlen_q = int(max_seqlen_q.item())
-    if torch.is_tensor(max_seqlen_k):
-        max_seqlen_k = int(max_seqlen_k.item())
+    # Build call args with optional sage_config from XB_ToolBox preset
+    call_args = [q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k]
+    call_kwargs = dict(is_causal=is_causal, sm_scale=sm_scale, smooth_k=smooth_k)
+    if sage_config is not None:
+        try:
+            call_kwargs['sage_config'] = sage_config
+        except TypeError:
+            pass  # sageattn_varlen may not support sage_config in older versions
     
-    # FA3 doesn't support dropout_p and window_size - filter them out
-    fa3_kwargs = {key: val for key, val in kwargs.items() if key not in ('dropout_p', 'window_size')}
+    out = sageattn_1_varlen_func(*call_args, **call_kwargs)
     
-    # FA3 returns a tuple (output, softmax_lse), we only need output
-    return flash_attn_3_varlen_func(
-        q=q,
-        k=k,
-        v=v,
-        cu_seqlens_q=cu_seqlens_q,
-        cu_seqlens_k=cu_seqlens_k,
-        max_seqlen_q=max_seqlen_q,
-        max_seqlen_k=max_seqlen_k,
-        seqused_q=None,
-        seqused_k=None,
-        **fa3_kwargs
-    )[0]
-
+    return out.to(out_dtype) if out.dtype != out_dtype else out
 
 @torch._dynamo.disable
-def call_sage_attn_2_varlen(q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k, **kwargs):
+def call_sage_attn_2_varlen(q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k, sage_config=None, **kwargs):
     """
-    Wrapper for SageAttention 2 sageattn_varlen that handles tensor-to-scalar conversion.
-    
-    SageAttention 2 provides optimized attention for NVIDIA GPUs with native varlen support.
-    Works on most modern NVIDIA GPUs.
-    
-    This function is excluded from torch.compile because:
-    1. SageAttention is a C++ extension that can't be compiled anyway
-    2. It requires Python int scalars for max_seqlen parameters
-    3. Disabling compilation here keeps the rest of the model compilable
+    Wrapper for SageAttention 2 sageattn_varlen with XB_ToolBox preset support.
     
     Args:
-        q: Query tensor (total_seq, heads, head_dim)
-        k: Key tensor (total_seq, heads, head_dim)
-        v: Value tensor (total_seq, heads, head_dim)
-        cu_seqlens_q: Cumulative sequence lengths for queries
-        cu_seqlens_k: Cumulative sequence lengths for keys
-        max_seqlen_q: Maximum query sequence length (can be tensor or int)
-        max_seqlen_k: Maximum key sequence length (can be tensor or int)
-        **kwargs: Additional arguments (causal supported, others ignored)
-        
-    Returns:
-        Attention output tensor (total_seq, heads, head_dim)
+        sage_config: Optional XB_ToolBox SageAttention kernel config dict (M, N, GROUP, WAVE, WARP, NSTAGES)
     """
     if not SAGE_ATTN_2_AVAILABLE:
         raise ImportError("SageAttention 2 is not available")
     
-    # Convert tensor max_seqlen to Python int if needed
     if torch.is_tensor(max_seqlen_q):
         max_seqlen_q = int(max_seqlen_q.item())
     if torch.is_tensor(max_seqlen_k):
         max_seqlen_k = int(max_seqlen_k.item())
     
-    # SageAttention requires half precision (fp16/bf16)
     out_dtype = q.dtype
     half_dtypes = (torch.float16, torch.bfloat16)
     
@@ -435,57 +297,38 @@ def call_sage_attn_2_varlen(q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, m
     is_causal = kwargs.get('causal', False)
     sm_scale = 1.0 / (q.shape[-1] ** 0.5)
     
-    out = sageattn_varlen(
+    call_kwargs = {}
+    if sage_config is not None:
+        call_kwargs['sage_config'] = sage_config
+    
+    out = sageattn_2_varlen_func(
         q, k, v,
         cu_seqlens_q, cu_seqlens_k,
         max_seqlen_q, max_seqlen_k,
-        is_causal, sm_scale
+        is_causal, sm_scale,
+        **call_kwargs
     )
     
     return out.to(out_dtype) if out.dtype != out_dtype else out
 
 
 @torch._dynamo.disable
-def call_sage_attn_3_varlen(q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k, **kwargs):
+def call_sage_attn_3_varlen(q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k, sage_config=None, **kwargs):
     """
     Wrapper for SageAttention 3 (Blackwell) that converts varlen format to batched format.
-    
-    SageAttention 3 / Blackwell provides maximum performance on RTX 50xx series GPUs.
-    However, it only supports batched attention (uniform sequence lengths), not varlen.
-    
-    This wrapper detects uniform-length batches and reshapes accordingly.
-    For variable-length sequences, it automatically falls back to SageAttention 2.
-    
-    This function is excluded from torch.compile because:
-    1. SageAttention is a C++ extension that can't be compiled anyway
-    2. It requires Python int scalars for max_seqlen parameters
-    3. The varlen-to-batched conversion involves dynamic shapes
-    4. Disabling compilation here keeps the rest of the model compilable
+    For variable-length sequences, automatically falls back to SageAttention 2.
     
     Args:
-        q: Query tensor (total_seq, heads, head_dim)
-        k: Key tensor (total_seq, heads, head_dim)
-        v: Value tensor (total_seq, heads, head_dim)
-        cu_seqlens_q: Cumulative sequence lengths for queries
-        cu_seqlens_k: Cumulative sequence lengths for keys
-        max_seqlen_q: Maximum query sequence length (can be tensor or int)
-        max_seqlen_k: Maximum key sequence length (can be tensor or int)
-        **kwargs: Additional arguments (passed to SA2 fallback if needed)
-        
-    Returns:
-        Attention output tensor (total_seq, heads, head_dim)
+        sage_config: Optional XB_ToolBox SageAttention kernel config dict (M, N, GROUP, WAVE, WARP, NSTAGES)
     """
     if not SAGE_ATTN_3_AVAILABLE:
         raise ImportError("SageAttention 3 (Blackwell) is not available")
     
-    # Convert tensor max_seqlen to Python int if needed
     if torch.is_tensor(max_seqlen_q):
         max_seqlen_q = int(max_seqlen_q.item())
     if torch.is_tensor(max_seqlen_k):
         max_seqlen_k = int(max_seqlen_k.item())
     
-    # Check if all sequences have uniform length (required for SA3 batched API)
-    # SA3/Blackwell uses batched attention, not varlen, so we need uniform lengths
     seq_lens_q = cu_seqlens_q[1:] - cu_seqlens_q[:-1]
     seq_lens_k = cu_seqlens_k[1:] - cu_seqlens_k[:-1]
     
@@ -493,17 +336,15 @@ def call_sage_attn_3_varlen(q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, m
     uniform_k = (seq_lens_k == seq_lens_k[0]).all()
     
     if not (uniform_q and uniform_k):
-        # Fall back to SA2 for variable-length sequences
-        # This is expected behavior - SA3 Blackwell doesn't support varlen natively
         if SAGE_ATTN_2_AVAILABLE:
             return call_sage_attn_2_varlen(
                 q, k, v, cu_seqlens_q, cu_seqlens_k,
-                max_seqlen_q, max_seqlen_k, **kwargs
+                max_seqlen_q, max_seqlen_k, sage_config=sage_config, **kwargs
             )
         raise RuntimeError(
             "SageAttention 3 (Blackwell) requires uniform sequence lengths, "
             "and SageAttention 2 is not available as fallback. "
-            "Please install sageattention package or use flash_attn/sdpa instead."
+            "Please install sageattention package or use sdpa instead."
         )
     
     # Extract batch dimensions
@@ -646,32 +487,32 @@ if not os.environ.get("SEEDVR2_OPTIMIZATIONS_LOGGED"):
     
     # Build status strings
     sage_status = "✅" if SAGE_ATTN_AVAILABLE else "❌"
-    flash_status = "✅" if FLASH_ATTN_AVAILABLE else "❌"
+    xb_status = "✅" if XB_TOOLBOX_AVAILABLE else "❌"
     triton_status = "✅" if TRITON_AVAILABLE else "❌"
     
     # Count available optimizations
-    available = [SAGE_ATTN_AVAILABLE, FLASH_ATTN_AVAILABLE, TRITON_AVAILABLE]
+    available = [SAGE_ATTN_AVAILABLE, XB_TOOLBOX_AVAILABLE, TRITON_AVAILABLE]
     num_available = sum(available)
     
     if num_available == 3:
-        print(f"⚡ SeedVR2 optimizations check: SageAttention {sage_status} | Flash Attention {flash_status} | Triton {triton_status}")
+        print(f"⚡ SeedVR2 optimizations check: SageAttention {sage_status} | XB_ToolBox {xb_status} | Triton {triton_status}")
     elif num_available == 0:
-        print(f"⚠️  SeedVR2 optimizations check: SageAttention {sage_status} | Flash Attention {flash_status} | Triton {triton_status}")
-        print("💡 For best performance: pip install sageattention flash-attn triton")
+        print(f"⚠️  SeedVR2 optimizations check: SageAttention {sage_status} | XB_ToolBox {xb_status} | Triton {triton_status}")
+        print("💡 For best performance: pip install sageattention triton (XB_ToolBox for Sage presets)")
     else:
         icon = "⚡" if num_available >= 2 else "⚠️ "
-        print(f"{icon} SeedVR2 optimizations check: SageAttention {sage_status} | Flash Attention {flash_status} | Triton {triton_status}")
+        print(f"{icon} SeedVR2 optimizations check: SageAttention {sage_status} | XB_ToolBox {xb_status} | Triton {triton_status}")
         
         # Build install suggestions for missing packages
         missing = []
         if not SAGE_ATTN_AVAILABLE:
             missing.append("sageattention")
-        if not FLASH_ATTN_AVAILABLE:
-            missing.append("flash-attn")
         if not TRITON_AVAILABLE:
             missing.append("triton")
+        if not XB_TOOLBOX_AVAILABLE:
+            missing.append("XB_ToolBox (ComfyUI custom node)")
         if missing:
-            print(f"💡 Optional: pip install {' '.join(missing)}")
+            print(f"💡 Optional: install {' '.join(missing)}")
     
     # Conv3d workaround status (if applicable)
     if NVIDIA_CONV3D_MEMORY_BUG_WORKAROUND:

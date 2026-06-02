@@ -104,18 +104,19 @@ class Debug:
     @torch._dynamo.disable  # Skip tracing to avoid datetime.now() warnings
     def log(self, message: str, level: str = "INFO", category: str = "general", force: bool = False, indent_level: int = 0) -> None:
         """
-        Log a categorized message with optional timestamp and indentation
+        Log a categorized message.
         
-        Args:
-            message: Message to log
-            level: Log level (INFO, WARN, ERROR)
-            category: Category for the message
-            force: If True, always log regardless of enabled state (for critical messages)
-            indent_level: Indentation level (0=no indent, 1=2 spaces, 2=4 spaces, etc.)
+        Display rules:
+        - force=True: always show
+        - level=ERROR/WARNING: always show  
+        - level=INFO: only show if force=True (never auto-shown)
         """
-        # Always log forced messages or if debugging is enabled - early return if not
-        if not (self.enabled or force):
-            return
+        if force:
+            pass  # Always show forced messages
+        elif level in ("ERROR", "WARNING"):
+            pass  # Always show errors/warnings
+        else:
+            return  # Suppress INFO-level messages (too noisy for production)
         
         # Get icon for category, fallback to general icon
         icon = self.CATEGORY_ICONS.get(category, self.CATEGORY_ICONS["general"])
@@ -142,38 +143,23 @@ class Debug:
         print(f"{prefix} {indent}{message}", flush=True)
 
     def print_header(self, cli: bool = False) -> None:
-        """Print the header with banner - always displayed"""
-        # Temporarily disable timestamps for clean header display
-        original_timestamps = self.show_timestamps
-        self.show_timestamps = False
+        """Print startup detection - always displayed"""
+        import platform, sys
         
-        # ASCII art logo
-        self.log("", category="none", force=True)
-        self.log("", category="none", force=True)
-        self.log("███████╗███████╗███████╗██████╗ ██╗   ██╗██████╗     ██████╗       ███████╗", category="none", force=True, indent_level=1)
-        self.log("██╔════╝██╔════╝██╔════╝██╔══██╗██║   ██║██╔══██╗    ╚════██╗      ██╔════╝", category="none", force=True, indent_level=1)
-        self.log("███████╗█████╗  █████╗  ██║  ██║██║   ██║██████╔╝     █████╔╝      ███████╗", category="none", force=True, indent_level=1)
-        self.log("╚════██║██╔══╝  ██╔══╝  ██║  ██║╚██╗ ██╔╝██╔══██╗    ██╔═══╝       ╚════██║", category="none", force=True, indent_level=1)
-        self.log("███████║███████╗███████╗██████╔╝ ╚████╔╝ ██║  ██║    ███████╗  ██╗ ███████║", category="none", force=True, indent_level=1)
-        self.log("╚══════╝╚══════╝╚══════╝╚═════╝   ╚═══╝  ╚═╝  ╚═╝    ╚══════╝  ╚═╝ ╚══════╝", category="none", force=True, indent_level=1)
-        # Version and credits - left/right aligned to logo width
-        version_text = f"v{__version__}"
-        cli_indicator = "💻 CLI · " if cli else ""
-        left_part = f"{cli_indicator}{version_text}"
-        right_part = "© ByteDance Seed · NumZ · AInVFX"
-        logo_width = 75
-        emoji_compensation = 1 if cli else 0
-        padding = logo_width - len(left_part) - len(right_part) - emoji_compensation
-        self.log(f"{left_part}{' ' * max(1, padding)}{right_part}", category="none", force=True, indent_level=1)
-        self.log("━" * logo_width, category="none", force=True, indent_level=1)
-        self.log("", category="none", force=True)
+        # GPU detection
+        if is_cuda_available():
+            try:
+                props = torch.cuda.get_device_properties(0)
+                gpu_name = f"{props.name} ({round(props.total_memory / (1024**3))}GB)"
+            except Exception:
+                gpu_name = "CUDA"
+        elif is_mps_available():
+            gpu_name = "Apple Silicon (MPS)"
+        else:
+            gpu_name = "CPU"
         
-        # Restore timestamps setting
-        self.show_timestamps = original_timestamps
-        
-        # Environment info - only in debug mode
-        if self.enabled:
-            self._print_environment_info(cli)
+        self.log(f"✅ 显卡识别成功：{gpu_name}  ✅ 检测到 PyTorch {torch.__version__}", category="info", force=True)
+        self.log("", category="none")
 
     def _print_environment_info(self, cli: bool = False) -> None:
         """Print concise environment info for bug reports - zero cost when debug disabled"""
@@ -193,51 +179,43 @@ class Debug:
             except (OSError, AttributeError):
                 os_str = f"Linux {platform.release()}"
         
-        # Python & PyTorch & CUDA
+        # Python & PyTorch
         py_ver = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
         torch_ver = torch.__version__
-        cuda_ver = getattr(torch.version, 'cuda', None) or "N/A"
         
         # GPU
         if is_cuda_available():
             try:
                 props = torch.cuda.get_device_properties(0)
                 gpu_str = f"{props.name} ({round(props.total_memory / (1024**3))}GB)"
-                cudnn_ver = str(torch.backends.cudnn.version()) if torch.backends.cudnn.is_available() else "N/A"
             except Exception:
                 gpu_str = "CUDA"
-                cudnn_ver = "N/A"
         elif is_mps_available():
             gpu_str = "Apple Silicon (MPS)"
-            cudnn_ver = "N/A"
         else:
             gpu_str = "CPU"
-            cudnn_ver = "N/A"
         
-        # Flash Attn, SageAttn & Triton - reuse existing module constants
+        # SageAttn & Triton & XB_ToolBox - reuse existing module constants
         try:
             from ..optimization.compatibility import (
-                FLASH_ATTN_2_AVAILABLE, FLASH_ATTN_3_AVAILABLE,
-                SAGE_ATTN_2_AVAILABLE, SAGE_ATTN_3_AVAILABLE,
+                SAGE_ATTN_1_AVAILABLE, SAGE_ATTN_2_AVAILABLE, SAGE_ATTN_3_AVAILABLE,
+                XB_TOOLBOX_AVAILABLE,
                 TRITON_AVAILABLE
             )
-            fa_parts = []
-            if FLASH_ATTN_3_AVAILABLE:
-                fa_parts.append("3")
-            if FLASH_ATTN_2_AVAILABLE:
-                fa_parts.append("2")
-            flash_str = f"v{','.join(fa_parts)} ✓" if fa_parts else "✗"
             
             sa_parts = []
             if SAGE_ATTN_3_AVAILABLE:
                 sa_parts.append("3")
             if SAGE_ATTN_2_AVAILABLE:
                 sa_parts.append("2")
+            if SAGE_ATTN_1_AVAILABLE:
+                sa_parts.append("1")
             sage_str = f"v{','.join(sa_parts)} ✓" if sa_parts else "✗"
             
+            xb_str = "✓" if XB_TOOLBOX_AVAILABLE else "✗"
             triton_str = "✓" if TRITON_AVAILABLE else "✗"
         except ImportError:
-            flash_str = sage_str = triton_str = "?"
+            sage_str = xb_str = triton_str = "?"
         
         # ComfyUI version
         comfy_str = None
@@ -248,20 +226,53 @@ class Debug:
             except ImportError:
                 pass
         
-        # Print
-        self.log(f"OS: {os_str} | GPU: {gpu_str}", category="info")
-        self.log(f"Python: {py_ver} | PyTorch: {torch_ver} | FlashAttn: {flash_str} | SageAttn: {sage_str} | Triton: {triton_str}", category="info")
-        cuda_line = f"CUDA: {cuda_ver} | cuDNN: {cudnn_ver}"
-        self.log(f"{cuda_line} | ComfyUI: {comfy_str}" if comfy_str else cuda_line, category="info")
+        # Print - single concise line
+        self.log(f"{gpu_str} | PyTorch {torch_ver} | SageAttn: {sage_str} | XB_ToolBox: {xb_str} | Triton: {triton_str}", category="info")
+        if comfy_str:
+            self.log(f"ComfyUI: {comfy_str} | Python: {py_ver} | OS: {os_str}", category="info")
+        else:
+            self.log(f"Python: {py_ver} | OS: {os_str}", category="info")
         self.log("", category="none")
 
     def print_footer(self) -> None:
-        """Print the footer with links - always displayed"""
+        """Print time summary in Chinese - always displayed"""
         self.log("", category="none", force=True)
         self.log("────────────────────────", category="none", force=True)
-        self.log("Questions? Updates? Watch, star & sponsor if you can!", category="dialogue", force=True)
-        self.log("https://www.youtube.com/@AInVFX", category="generation", force=True)
-        self.log("https://github.com/numz/ComfyUI-SeedVR2_VideoUpscaler", category="starlove", force=True)
+        
+        total = self.timer_durations.get("total_execution", 0)
+        generation = self.timer_durations.get("generation", 0)
+        
+        phase_names = {
+            "phase3_decoding": "图像解码",
+            "phase2_upscaling": "采样生成", 
+            "phase1_encoding": "图像编码",
+            "final_cleanup": "最后清理",
+            "model_preparation": "模型准备",
+            "phase4_postprocessing": "后期处理",
+        }
+        
+        self.log(f"运行总耗时: {total:.2f}s", category="timing", force=True)
+        if generation > 0:
+            self.log(f"  └─ 图像生成: {generation:.2f}s", category="timing", force=True)
+        
+        # Show sub-phases in order of duration (descending)
+        sub_phases = []
+        for key, label in phase_names.items():
+            if key in self.timer_durations:
+                sub_phases.append((label, self.timer_durations[key]))
+        sub_phases.sort(key=lambda x: -x[1])
+        for label, duration in sub_phases:
+            self.log(f"  └─ {label}: {duration:.2f}s", category="timing", force=True)
+        
+        if total > 0 and hasattr(self, '_total_frames'):
+            fps = self._total_frames / total
+            self.log(f"平均FPS: {fps:.2f} 帧/秒", category="timing", force=True)
+        
+        self.log("────────────────────────", category="none", force=True)
+    
+    def set_total_frames(self, n: int):
+        """Store total frame count for FPS calculation in footer"""
+        self._total_frames = n
     
     @torch._dynamo.disable  # Skip tracing to avoid time.time() warnings
     def start_timer(self, name: str, force: bool = False) -> None:
@@ -711,30 +722,19 @@ class Debug:
     
     def log_swap_time(self, component_id: Union[int, str], duration: float, 
                  component_type: str = "block", force: bool = False) -> None:
-        """
-        Log swap timing information for BlockSwap operations
-        
-        Args:
-            component_id: Identifier for the component being swapped
-            duration: Duration of the swap in seconds
-            component_type: Type of component ('block' or other)
-            force: If True, always log regardless of enabled state
-        """
+        """Record BlockSwap timing (silent, for summary only)"""
         if self.enabled or force:
-            # Store timing data
             self.swap_times.append({
                 'component_id': component_id,
                 'component_type': component_type,
                 'duration': duration,
             })
             
-            # Format message based on component type
-            if component_type == "block":
-                message = f"Block {component_id} swap: {duration*1000:.2f}ms"
-            else:
-                message = f"{component_type} {component_id} swap: {duration*1000:.2f}ms"
-            
-            self.log(message, category="blockswap", force=force)
+            # Lazy-init progress bar on first swap
+            if not hasattr(self, '_swap_pbar'):
+                self._swap_pbar = None
+                self._swap_count = 0
+            self._swap_count += 1
     
     def get_swap_summary(self) -> Dict[str, Any]:
         """Get summary of swap operations for analysis"""
