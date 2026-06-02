@@ -231,54 +231,38 @@ def compute_generation_info(
 
 
 def log_generation_start(info: Dict[str, Any], debug: Optional['Debug'] = None) -> None:
-    """
-    Log generation start information in a consistent format.
-    
-    Args:
-        info: Information dictionary from compute_generation_info()
-        debug: Debug instance for logging
-    """
+    """Log generation start in Chinese format."""
     if debug is None:
         return
     
-    debug.log("", category="none", force=True)
-    debug.log("Starting upscaling generation...", category="generation", force=True)
+    debug.log("", category="none")
     
-    # Build concise parameter info
-    batch_text = f"Batch size: {info['batch_size']}"
-    if info.get('uniform_batch_size', False):
-        batch_text += " (uniform)"
-    params_info = batch_text
-    if info['prepend_frames'] > 0:
-        params_info += f", Prepend frames: {info['prepend_frames']}"
-    if info['temporal_overlap'] > 0:
-        params_info += f", Temporal overlap: {info['temporal_overlap']}"
-    params_info += f", Seed: {info['seed']}, Channels: {info['channels_info']}"
-    
-    # Build resolution constraint info
-    res_constraint = f"shortest edge: {info['resolution']}px"
-    if info['max_resolution'] > 0:
-        res_constraint += f", max edge: {info['max_resolution']}px"
-    
-    # Log dimension flow with full context
+    # Build dimension flow line
+    frame_text = "帧" if info['input_frames'] <= 1 else "帧"
     if info['true_h'] > 0:
-        frame_text = "frame" if info['input_frames'] <= 1 else "frames"
         if info['true_h'] == info['padded_h'] and info['true_w'] == info['padded_w']:
             debug.log(
-                f"Input: {info['input_frames']} {frame_text}, "
-                f"{info['input_w']}x{info['input_h']}px → Output: {info['true_w']}x{info['true_h']}px "
-                f"({res_constraint})",
+                f"📊 总输入: {info['input_frames']}{frame_text}，"
+                f"🎬 初始: {info['input_w']}x{info['input_h']}像素 → "
+                f"🔀 输出为: {info['true_w']}x{info['true_h']}像素 "
+                f"(🎯 最短边: {info['resolution']}像素)",
                 category="generation", force=True, indent_level=1
             )
         else:
             debug.log(
-                f"Input: {info['input_frames']} {frame_text}, "
-                f"{info['input_w']}x{info['input_h']}px → Padded: {info['padded_w']}x{info['padded_h']}px → "
-                f"Output: {info['true_w']}x{info['true_h']}px ({res_constraint})",
+                f"📊 总输入: {info['input_frames']}{frame_text}，"
+                f"🎬 初始: {info['input_w']}x{info['input_h']}像素 → "
+                f"🔍 放大到: {info['padded_w']}x{info['padded_h']}像素 → "
+                f"🔀 输出为: {info['true_w']}x{info['true_h']}像素 "
+                f"(🎯 最短边: {info['resolution']}像素)",
                 category="generation", force=True, indent_level=1
             )
     
-    debug.log(f"{params_info}", category="generation", force=True, indent_level=1)
+    batch_text = f"批次大小: {info['batch_size']}"
+    if info.get('uniform_batch_size', False):
+        batch_text += " (均匀)"
+    debug.log(f"{batch_text}, 种子: {info['seed']}, 通道: {info['channels_info']}",
+              category="generation", force=True, indent_level=1)
 
 
 def blend_overlapping_frames(prev_tail: torch.Tensor, cur_head: torch.Tensor, overlap: int) -> torch.Tensor:
@@ -462,7 +446,7 @@ def prepare_runner(
         decode_tile_size: Tile size for decoding (height, width)
         decode_tile_overlap: Tile overlap for decoding (height, width)
         tile_debug: Tile visualization mode (false/encode/decode)
-        attention_mode: Attention computation backend ('sdpa', 'flash_attn_2', 'flash_attn_3', 'sageattn_2', or 'sageattn_3')
+        attention_mode: Attention computation backend ('sdpa' or XB_ToolBox SageAttention preset)
         torch_compile_args_dit: Optional torch.compile configuration for DiT model
         torch_compile_args_vae: Optional torch.compile configuration for VAE model
         

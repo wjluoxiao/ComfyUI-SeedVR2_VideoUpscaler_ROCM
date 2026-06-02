@@ -15,10 +15,10 @@
 import torch
 import torch.nn.functional as F
 
-# Import flash/sage attn with automatic fallback from compatibility layer
+# Import sage attn with automatic fallback from compatibility layer
 from ...optimization.compatibility import (
-    call_flash_attn_2_varlen, call_flash_attn_3_varlen,
-    call_sage_attn_2_varlen, call_sage_attn_3_varlen
+    call_sage_attn_1_varlen, call_sage_attn_2_varlen, call_sage_attn_3_varlen,
+    get_sage_config_for_mode, get_best_sage_varlen
 )
 
 from torch import nn
@@ -26,7 +26,7 @@ from torch import nn
 
 def pytorch_varlen_attention(q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q=None, max_seqlen_k=None, dropout_p=0.0, softmax_scale=None, causal=False, deterministic=False):
     """
-    A PyTorch-based implementation of variable-length attention to replace flash_attn_varlen_func.
+    A PyTorch-based implementation of variable-length attention as fallback.
     It processes each sequence in the batch individually.
     
     NOTE: max_seqlen_q and max_seqlen_k are accepted for API compatibility but not used.
@@ -83,10 +83,7 @@ class FlashAttentionVarlen(nn.Module):
     
     Supported backends:
     - sdpa: PyTorch SDPA (fully compilable, always available)
-    - flash_attn_2: Flash Attention 2 (Ampere+)
-    - flash_attn_3: Flash Attention 3 (Hopper+)
-    - sageattn_2: SageAttention 2
-    - sageattn_3: SageAttention 3 (Blackwell/RTX 50xx)
+    - XB_ToolBox presets: SageAttention with XB_ToolBox kernel configs
     
     All non-SDPA backends use @torch._dynamo.disable wrapper (C++ extensions).
     """
@@ -96,7 +93,7 @@ class FlashAttentionVarlen(nn.Module):
         Initialize with specified attention backend.
         
         Args:
-            attention_mode: 'sdpa', 'flash_attn_2', 'flash_attn_3', 'sageattn_2', or 'sageattn_3'
+            attention_mode: 'sdpa' or XB_ToolBox SageAttention preset name
             compute_dtype: Compute dtype for attention (set by pipeline, defaults to None for auto-detection)
         """
         super().__init__()
@@ -120,17 +117,18 @@ class FlashAttentionVarlen(nn.Module):
             k = k.to(self.compute_dtype)
             v = v.to(self.compute_dtype)
         
-        if self.attention_mode == 'flash_attn_3':
-            return call_flash_attn_3_varlen(
-                q, k, v, cu_seqlens_q, cu_seqlens_k, 
-                max_seqlen_q, max_seqlen_k, **kwargs
-            )
-        elif self.attention_mode == 'flash_attn_2':
-            return call_flash_attn_2_varlen(
-                q, k, v, cu_seqlens_q, cu_seqlens_k, 
-                max_seqlen_q, max_seqlen_k, **kwargs
-            )
-        elif self.attention_mode == 'sageattn_3':
+        # XB_ToolBox SageAttention presets - auto-select best available backend
+        sage_config = get_sage_config_for_mode(self.attention_mode)
+        if sage_config is not None:
+            sage_func, _ = get_best_sage_varlen()
+            if sage_func is not None:
+                return sage_func(
+                    q, k, v, cu_seqlens_q, cu_seqlens_k,
+                    max_seqlen_q, max_seqlen_k, sage_config=sage_config, **kwargs
+                )
+        
+        # Legacy sageattn modes (backward compatibility)
+        if self.attention_mode == 'sageattn_3':
             return call_sage_attn_3_varlen(
                 q, k, v, cu_seqlens_q, cu_seqlens_k,
                 max_seqlen_q, max_seqlen_k, **kwargs
@@ -140,9 +138,14 @@ class FlashAttentionVarlen(nn.Module):
                 q, k, v, cu_seqlens_q, cu_seqlens_k,
                 max_seqlen_q, max_seqlen_k, **kwargs
             )
-        else:
-            # PyTorch SDPA
-            return pytorch_varlen_attention(
+        elif self.attention_mode == 'sageattn_1':
+            return call_sage_attn_1_varlen(
                 q, k, v, cu_seqlens_q, cu_seqlens_k,
                 max_seqlen_q, max_seqlen_k, **kwargs
             )
+        
+        # Default: PyTorch SDPA
+        return pytorch_varlen_attention(
+            q, k, v, cu_seqlens_q, cu_seqlens_k,
+            max_seqlen_q, max_seqlen_k, **kwargs
+        )

@@ -219,8 +219,7 @@ def encode_all_batches(
     if debug is None:
         raise ValueError("Debug instance must be provided to encode_all_batches")
     
-    debug.log("", category="none", force=True)
-    debug.log("━━━━━━━━ Phase 1: VAE encoding ━━━━━━━━", category="none", force=True)
+    debug.log("🎨 开始执行编码", category="none", force=True)
     debug.start_timer("phase1_encoding")
 
     # Context must be provided
@@ -300,7 +299,7 @@ def encode_all_batches(
         else:
             # Model already materialized (cached) - apply any pending configs if needed
             if getattr(runner, '_vae_config_needs_application', False):
-                debug.log("Applying updated VAE configuration", category="vae", force=True)
+                debug.log("应用更新的 VAE 配置", category="vae", force=True)
                 apply_model_specific_config(runner.vae, runner, runner.config, False, debug)
         
         # Initialize precision after VAE is materialized with actual weights
@@ -359,7 +358,7 @@ def encode_all_batches(
             current_frames = end_idx - start_idx
             is_uniform_padding = uniform_batch_size and current_frames < batch_size
             
-            debug.log(f"Encoding batch {encode_idx+1}/{num_encode_batches}", category="vae", force=True)
+            debug.log(f"🎨 编码批次 {encode_idx+1}/{num_encode_batches}", category="vae", force=True)
             debug.start_timer(f"encode_batch_{encode_idx+1}")
             
             # Save original length before any padding
@@ -533,8 +532,7 @@ def encode_all_batches(
             manage_model_device(model=runner.vae, target_device=ctx['vae_offload_device'], 
                                 model_name="VAE", debug=debug, reason="VAE offload", runner=runner)
     
-    debug.end_timer("phase1_encoding", "Phase 1: VAE encoding complete", show_breakdown=True)
-    debug.log_memory_state("After phase 1 (VAE encoding)", show_tensors=False)
+    debug.end_timer("phase1_encoding", "图像编码")
     
     return ctx
 
@@ -585,8 +583,7 @@ def upscale_all_batches(
     if 'all_latents' not in ctx or not ctx['all_latents']:
         raise ValueError("No encoded latents found. Run encode_all_batches first.")
     
-    debug.log("", category="none", force=True)
-    debug.log("━━━━━━━━ Phase 2: DiT upscaling ━━━━━━━━", category="none", force=True)
+    debug.log("🚀 开始放大运算", category="none", force=True)
     debug.start_timer("phase2_upscaling")
     
     # Load text embeddings if not already loaded
@@ -622,7 +619,7 @@ def upscale_all_batches(
         else:
             # Model already materialized (cached) - apply any pending configs if needed
             if getattr(runner, '_dit_config_needs_application', False):
-                debug.log("Applying updated DiT configuration", category="dit", force=True)
+                debug.log("应用更新的 DiT 配置", category="dit", force=True)
                 apply_model_specific_config(runner.dit, runner, runner.config, True, debug)
     
         # Initialize precision after DiT is materialized with actual weights
@@ -657,7 +654,7 @@ def upscale_all_batches(
             
             check_interrupt(ctx)
             
-            debug.log(f"Upscaling batch {upscale_idx+1}/{num_valid_latents}", category="generation", force=True)
+            debug.log(f"🚀 放大批次 {upscale_idx+1}/{num_valid_latents}", category="generation", force=True)
             # Reset seed for each batch to ensure identical RNG state
             # This ensures identical inputs produce identical outputs regardless of batch position
             set_seed(seed)
@@ -766,31 +763,9 @@ def upscale_all_batches(
             swap_summary = debug.get_swap_summary()
             if swap_summary and swap_summary.get('total_swaps', 0) > 0:
                 total_time = swap_summary.get('block_total_ms', 0) + swap_summary.get('io_total_ms', 0)
-                debug.log("BlockSwap Summary", category="blockswap")
-                debug.log(f"BlockSwap overhead: {total_time:.2f}ms", category="blockswap", indent_level=1)
-                debug.log(f"Total swaps: {swap_summary['total_swaps']}", category="blockswap", indent_level=1)
-                
-                # Show block swap details
-                if 'block_swaps' in swap_summary and swap_summary['block_swaps'] > 0:
-                    avg_ms = swap_summary.get('block_avg_ms', 0)
-                    total_ms = swap_summary.get('block_total_ms', 0)
-                    min_ms = swap_summary.get('block_min_ms', 0)
-                    max_ms = swap_summary.get('block_max_ms', 0)
-                    
-                    debug.log(f"Block swaps: {swap_summary['block_swaps']} "
-                            f"(avg: {avg_ms:.2f}ms, min: {min_ms:.2f}ms, max: {max_ms:.2f}ms, total: {total_ms:.2f}ms)", 
-                            category="blockswap", indent_level=1)
-                    
-                    # Show most frequently swapped block
-                    if 'most_swapped_block' in swap_summary:
-                        debug.log(f"Most swapped: Block {swap_summary['most_swapped_block']} "
-                                f"({swap_summary['most_swapped_count']} times)", category="blockswap", indent_level=1)
-                
-                # Show I/O swap details if present
-                if 'io_swaps' in swap_summary and swap_summary['io_swaps'] > 0:
-                    debug.log(f"I/O swaps: {swap_summary['io_swaps']} "
-                            f"(avg: {swap_summary.get('io_avg_ms', 0):.2f}ms, total: {swap_summary.get('io_total_ms', 0):.2f}ms)", 
-                            category="blockswap", indent_level=1)
+                swaps = swap_summary.get('block_swaps', 0)
+                avg = swap_summary.get('block_avg_ms', 0)
+                debug.log(f"BlockSwap: {swaps} 块, {total_time:.0f}ms 总计 ({avg:.0f}ms 平均)", category="blockswap", force=True)
 
         # Cleanup DiT as it's no longer needed after upscaling
         cleanup_dit(runner=runner, debug=debug, cache_model=cache_model)
@@ -798,7 +773,7 @@ def upscale_all_batches(
         # Cleanup text embeddings as they're no longer needed after upscaling
         cleanup_text_embeddings(ctx, debug)
     
-    debug.end_timer("phase2_upscaling", "Phase 2: DiT upscaling complete", show_breakdown=True)
+    debug.end_timer("phase2_upscaling", "采样生成")
     debug.log_memory_state("After phase 2 (DiT upscaling)", show_tensors=False)
     
     return ctx
@@ -847,8 +822,7 @@ def decode_all_batches(
     if 'all_upscaled_latents' not in ctx or not ctx['all_upscaled_latents']:
         raise ValueError("No upscaled latents found. Run upscale_all_batches first.")
     
-    debug.log("", category="none", force=True)
-    debug.log("━━━━━━━━ Phase 3: VAE decoding ━━━━━━━━", category="none", force=True)
+    debug.log("🎨 开始执行解码", category="none", force=True)
     debug.start_timer("phase3_decoding")
 
     # Count valid latents
@@ -873,7 +847,7 @@ def decode_all_batches(
         target_device = 'cpu'
     channels_str = "RGBA" if C == 4 else "RGB"
     required_gb = (total_frames * true_h * true_w * C * 2) / (1024**3)
-    debug.log(f"Pre-allocating output tensor: {total_frames} frames, {true_w}x{true_h}px, {channels_str} ({required_gb:.2f}GB)", 
+    debug.log(f"预分配输出张量: {total_frames} 帧, {true_w}x{true_h}像素, {channels_str} ({required_gb:.2f}GB)", 
               category="setup", force=True)
     
     ctx['final_video'] = torch.empty((total_frames, true_h, true_w, C), dtype=ctx['compute_dtype'], device=target_device)
@@ -1051,7 +1025,7 @@ def decode_all_batches(
             release_tensor_collection(ctx['all_upscaled_latents'])
             del ctx['all_upscaled_latents']
         
-    debug.end_timer("phase3_decoding", "Phase 3: VAE decoding complete", show_breakdown=True)
+    debug.end_timer("phase3_decoding", "图像解码")
     debug.log_memory_state("After phase 3 (VAE decoding)", show_tensors=False)
     
     return ctx
@@ -1104,8 +1078,7 @@ def postprocess_all_batches(
     if 'decode_batch_info' not in ctx or not ctx['decode_batch_info']:
         raise ValueError("decode_batch_info not found. Run decode_all_batches first.")
     
-    debug.log("", category="none", force=True)
-    debug.log("━━━━━━━━ Phase 4: Post-processing ━━━━━━━━", category="none", force=True)
+    debug.log("📹 后期处理", category="none", force=True)
     debug.start_timer("phase4_postprocessing")
     
     # Total_frames represents the original input frame count (set in Phase 1)
@@ -1221,7 +1194,7 @@ def postprocess_all_batches(
         for info_idx, (write_start, write_end, batch_idx, ori_length) in enumerate(batch_info_list):
             check_interrupt(ctx)
             
-            debug.log(f"Post-processing batch {info_idx+1}/{num_valid_samples}", category="video", force=True)
+            debug.log(f"📹 后期处理批次 {info_idx+1}/{num_valid_samples}", category="video", force=True)
             debug.start_timer(f"postprocess_batch_{info_idx+1}")
             
             # Get slice from final_video - currently in [T, H, W, C] format, values in [-1, 1]
@@ -1273,18 +1246,15 @@ def postprocess_all_batches(
             
             # Apply color correction if enabled (RGB only)
             if color_correction != "none" and input_video is not None:
-                # Check if RGBA (samples are in T, C, H, W format at this point)
+                # Check if RGBA
                 has_alpha = ctx.get('is_rgba', False)
                 alpha_channel = None
                 
                 if has_alpha:
-                    # Check actual channel count
                     if sample.shape[1] == 4:
-                        # Extract and temporarily store alpha for reattachment after color correction
-                        alpha_channel = sample[:, 3:4, :, :]  # (T, 1, H, W)
-                        sample = sample[:, :3, :, :]  # Keep only RGB (T, 3, H, W)
+                        alpha_channel = sample[:, 3:4, :, :]
+                        sample = sample[:, :3, :, :]
                 
-                # Ensure both tensors are on same device (GPU) for color correction
                 if input_video.device != sample.device:
                     input_video = manage_tensor(
                         tensor=input_video,
@@ -1295,39 +1265,35 @@ def postprocess_all_batches(
                         indent_level=1
                     )
                     
-                # Apply selected color correction method
                 debug.start_timer(f"color_correction_{color_correction}")
                 
+                cc_names = {"lab": "LAB 感知色彩匹配", "wavelet": "小波色彩重建", 
+                           "wavelet_adaptive": "小波自适应饱和度", "hsv": "HSV 色相条件匹配", "adain": "AdaIN 风格迁移"}
+                cc_name = cc_names.get(color_correction, color_correction)
+                debug.log(f"色彩校正：{cc_name}", category="video", force=True)
+                
                 if color_correction == "lab":
-                    debug.log("Applying LAB perceptual color transfer", category="video", force=True, indent_level=1)
                     sample = lab_color_transfer(sample, input_video, debug, luminance_weight=0.8)
                 elif color_correction == "wavelet_adaptive":
-                    debug.log("Applying wavelet with adaptive saturation correction", category="video", force=True, indent_level=1)
                     sample = wavelet_adaptive_color_correction(sample, input_video, debug)
                 elif color_correction == "wavelet":
-                    debug.log("Applying wavelet color reconstruction", category="video", force=True, indent_level=1)
                     sample = wavelet_reconstruction(sample, input_video, debug)
                 elif color_correction == "hsv":
-                    debug.log("Applying HSV hue-conditional saturation matching", category="video", force=True, indent_level=1)
                     sample = hsv_saturation_histogram_match(sample, input_video, debug)
                 elif color_correction == "adain":
-                    debug.log("Applying AdaIN color correction", category="video", force=True, indent_level=1)
                     sample = adaptive_instance_normalization(sample, input_video)
                 else:
-                    debug.log(f"Unknown color correction method: {color_correction}", level="WARNING", category="video", force=True, indent_level=1)
+                    debug.log(f"未知色彩校正方法: {color_correction}", level="WARNING", category="video", force=True)
                 
-                debug.end_timer(f"color_correction_{color_correction}", f"Color correction ({color_correction})")
+                debug.end_timer(f"color_correction_{color_correction}", f"色彩校正 ({color_correction})")
                 
-                # Free the reconstructed transformed video
                 del input_video
 
-                # Recombine with Alpha if it was present in input
                 if has_alpha and alpha_channel is not None:
-                    # Concatenate in channels-first: (T, 3, H, W) + (T, 1, H, W) -> (T, 4, H, W)
                     sample = torch.cat([sample, alpha_channel], dim=1)
             
             else:
-                debug.log("Color correction disabled (set to none)", category="video", indent_level=1)
+                debug.log("📹 色彩校正：已禁用 (设置为无)", category="video", force=True)
             
             # Convert to final format: [T, C, H, W] → [T, H, W, C]
             sample = optimized_sample_to_image_format(sample)
@@ -1425,7 +1391,7 @@ def postprocess_all_batches(
                     total_computed += (num_valid_samples - 1) * actual_overlap
                 frame_info += f" ({total_computed} computed with {' + '.join(adjustments)} removed)"
             
-            debug.log(f"Output assembled: {frame_info}, Resolution: {Wf}x{Hf}px, Channels: {channels_str}", 
+            debug.log(f"输出已组装: {frame_info}, 分辨率: {Wf}x{Hf}像素, 通道: {channels_str}", 
                     category="generation", force=True)
         else:
             ctx['final_video'] = torch.empty((0, 0, 0, 0), dtype=ctx['compute_dtype'])
@@ -1472,7 +1438,7 @@ def postprocess_all_batches(
             release_tensor_memory(ctx['input_images'])
             del ctx['input_images']
 
-    debug.end_timer("phase4_postprocessing", "Phase 4: Post-processing complete", show_breakdown=True)
+    debug.end_timer("phase4_postprocessing", "后期处理")
     debug.log_memory_state("After phase 4 (Post-processing)", show_tensors=False)
     
     return ctx

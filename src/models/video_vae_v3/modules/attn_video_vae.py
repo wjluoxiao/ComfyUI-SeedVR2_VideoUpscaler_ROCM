@@ -1317,7 +1317,7 @@ class VideoAutoencoderKL(diffusers.AutoencoderKL):
             return self.slicing_encode(x)
         else:
             if self.debug:
-                self.debug.log(f"Using VAE tiled encoding (Tile: {tile_size}, Overlap: {tile_overlap})", category="vae", force=True, indent_level=1)
+                self.debug.log(f"使用 VAE 分块编码 (块大小: {tile_size}, 重叠: {tile_overlap})", category="vae", force=True, indent_level=1)
 
         # Spatial scale factor (output/latent)
         scale_factor = self.spatial_downsample_factor
@@ -1390,17 +1390,20 @@ class VideoAutoencoderKL(diffusers.AutoencoderKL):
 
                 tile_sample = x[:, :, :, y_out:y_out_end, x_out:x_out_end]
 
-                # Log progress periodically instead of every tile (at 1, 6, 11, 16, ...)
-                if self.debug and (tile_id % 5 == 1 or tile_id == num_tiles):
-                    if tile_id == num_tiles:
-                        # Only log final tile if not covered by previous range
-                        if (tile_id - 1) % 5 == 0:
-                            self.debug.log(f"Encoding tile {tile_id} / {num_tiles}", category="vae", indent_level=1)
-                    else:
-                        end_tile = min(tile_id + 4, num_tiles)
-                        self.debug.log(f"Encoding tiles {tile_id}-{end_tile} / {num_tiles}", category="vae", indent_level=1)
+                # Initialize tqdm progress bar on first tile
+                if self.debug and tile_id == 1:
+                    try:
+                        from tqdm import tqdm
+                        self._encode_pbar = tqdm(total=num_tiles, desc="🎨 Encoding", unit="tile",
+                                                 bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]')
+                    except ImportError:
+                        self._encode_pbar = None
 
                 encoded_tile = self.slicing_encode(tile_sample)
+
+                # Update progress bar
+                if self.debug and hasattr(self, '_encode_pbar') and self._encode_pbar:
+                    self._encode_pbar.update(1)
 
                 # Initialize output size using first encoded tile
                 if result is None:
@@ -1462,6 +1465,11 @@ class VideoAutoencoderKL(diffusers.AutoencoderKL):
             count = count.to(x.device)
         result.div_(count.clamp(min=1e-6))
 
+        # Close progress bar
+        if self.debug and hasattr(self, '_encode_pbar') and self._encode_pbar:
+            self._encode_pbar.close()
+            del self._encode_pbar
+
         if x.shape[2] == 1:  # single frame
             result = result.squeeze(2)
 
@@ -1491,7 +1499,7 @@ class VideoAutoencoderKL(diffusers.AutoencoderKL):
             return self.slicing_decode(z)
         else:
             if self.debug:
-                self.debug.log(f"Using VAE tiled decoding (Tile: {tile_size}, Overlap: {tile_overlap})", category="vae", force=True, indent_level=1)
+                self.debug.log(f"使用 VAE 分块解码 (块大小: {tile_size}, 重叠: {tile_overlap})", category="vae", force=True, indent_level=1)
         
         latent_overlap_h = max(0, min((overlap_h // scale_factor), latent_tile_h - 1))
         latent_overlap_w = max(0, min((overlap_w // scale_factor), latent_tile_w - 1))
@@ -1552,17 +1560,20 @@ class VideoAutoencoderKL(diffusers.AutoencoderKL):
                 
                 tile_latent = z[:, :, :, y_lat:y_lat_end, x_lat:x_lat_end]
 
-                # Log progress periodically instead of every tile (at 1, 6, 11, 16, ...)
-                if self.debug and (tile_id % 5 == 1 or tile_id == num_tiles):
-                    if tile_id == num_tiles:
-                        # Only log final tile if not covered by previous range
-                        if (tile_id - 1) % 5 == 0:
-                            self.debug.log(f"Decoding tile {tile_id} / {num_tiles}", category="vae", indent_level=1)
-                    else:
-                        end_tile = min(tile_id + 4, num_tiles)
-                        self.debug.log(f"Decoding tiles {tile_id}-{end_tile} / {num_tiles}", category="vae", indent_level=1)
+                # Initialize tqdm progress bar on first tile
+                if self.debug and tile_id == 1:
+                    try:
+                        from tqdm import tqdm
+                        self._decode_pbar = tqdm(total=num_tiles, desc="🎨 Decoding", unit="tile",
+                                                 bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]')
+                    except ImportError:
+                        self._decode_pbar = None
 
                 decoded_tile = self.slicing_decode(tile_latent)
+
+                # Update progress bar
+                if self.debug and hasattr(self, '_decode_pbar') and self._decode_pbar:
+                    self._decode_pbar.update(1)
 
                 # Initialize result tensors using actual decoded shapes on first tile
                 if result is None:
@@ -1623,6 +1634,11 @@ class VideoAutoencoderKL(diffusers.AutoencoderKL):
             result = result.to(z.device)
             count = count.to(z.device)
         result.div_(count.clamp(min=1e-6)) # In-place normalize
+
+        # Close progress bar
+        if self.debug and hasattr(self, '_decode_pbar') and self._decode_pbar:
+            self._decode_pbar.close()
+            del self._decode_pbar
 
         if z.shape[2] == 1:  # single frame
             result = result.squeeze(2)

@@ -171,7 +171,7 @@ def _describe_attention_mode(attention_mode: Optional[str]) -> str:
     Generate human-readable description of attention mode configuration.
     
     Args:
-        attention_mode: Attention mode string ('sdpa', 'flash_attn_2', 'flash_attn_3', 'sageattn_2', or 'sageattn_3')
+        attention_mode: Attention mode string ('sdpa' or XB_ToolBox preset name)
         
     Returns:
         Human-readable description string
@@ -181,10 +181,13 @@ def _describe_attention_mode(attention_mode: Optional[str]) -> str:
     
     mode_descriptions = {
         'sdpa': 'PyTorch SDPA',
-        'flash_attn_2': 'Flash Attention 2',
-        'flash_attn_3': 'Flash Attention 3',
-        'sageattn_2': 'SageAttention 2',
-        'sageattn_3': 'SageAttention 3 (Blackwell)'
+        'XB 内置模式 A (128x128x32)': 'XB SageAttention 内置 A',
+        'XB 内置模式 B (128x64x96)': 'XB SageAttention 内置 B',
+        'XB 内置模式 C (128x16x16)': 'XB SageAttention 内置 C',
+        'XB 内置模式 D (64x64x16)': 'XB SageAttention 内置 D',
+        'XB 自定模式 A (机智启动器)': 'XB SageAttention 自定 A',
+        'XB 自定模式 B (机智启动器)': 'XB SageAttention 自定 B',
+        'XB 自定模式 C (机智启动器)': 'XB SageAttention 自定 C',
     }
     
     return mode_descriptions.get(attention_mode, attention_mode)
@@ -439,7 +442,7 @@ def _update_dit_config(
             - dynamic: bool - Enable dynamic shapes
             - dynamo_cache_size_limit: int - Cache size limit
             - dynamo_recompile_limit: int - Recompilation limit
-        attention_mode: Attention computation backend ('sdpa', 'flash_attn_2', 'flash_attn_3', 'sageattn_2', or 'sageattn_3')
+        attention_mode: Attention computation backend ('sdpa' or XB_ToolBox SageAttention preset)
         debug: Debug instance for logging
         
     Returns:
@@ -711,7 +714,7 @@ def _create_new_runner(
             - Config set to mutable (readonly=False)
             - No models loaded (structure only)
     """
-    debug.log(f"Creating new runner: DiT={dit_model}, VAE={vae_model}", 
+    debug.log(f"创建新运行器: DiT={dit_model}, VAE={vae_model}", 
              category="runner", force=True)
     
     debug.start_timer("config_load")
@@ -774,7 +777,7 @@ def configure_runner(
         decode_tile_size: Tile size for decoding (height, width)
         decode_tile_overlap: Tile overlap for decoding (height, width)
         tile_debug: Tile visualization mode (false/encode/decode)
-        attention_mode: Attention computation backend ('sdpa', 'flash_attn_2', 'flash_attn_3', 'sageattn_2', or 'sageattn_3')
+        attention_mode: Attention computation backend ('sdpa' or XB_ToolBox SageAttention preset)
         torch_compile_args_dit: Optional torch.compile configuration for DiT model
         torch_compile_args_vae: Optional torch.compile configuration for VAE model
         
@@ -868,7 +871,7 @@ def _configure_runner_settings(
         decode_tile_size: Tile dimensions (height, width) for decoding in pixels
         decode_tile_overlap: Overlap dimensions (height, width) between decoding tiles
         tile_debug: Tile visualization mode (false/encode/decode)
-        attention_mode: Attention computation backend ('sdpa', 'flash_attn_2', 'flash_attn_3', 'sageattn_2', or 'sageattn_3')
+        attention_mode: Attention computation backend ('sdpa' or XB_ToolBox SageAttention preset)
         torch_compile_args_dit: torch.compile configuration for DiT model or None
         torch_compile_args_vae: torch.compile configuration for VAE model or None
         block_swap_config: BlockSwap configuration for DiT model or None
@@ -1196,7 +1199,7 @@ def apply_model_specific_config(model: torch.nn.Module, runner: VideoDiffusionIn
             
             # Get compute_dtype from runner
             compute_dtype = getattr(runner, '_compute_dtype', torch.bfloat16)            
-            debug.log(f"Applying {attention_mode} attention mode and {compute_dtype} compute dtype to model", category="setup")
+            debug.log(f"正在应用 {attention_mode} 注意力模式 和 {compute_dtype} 计算数据类型到模型", category="setup", force=True)
             
             # Get the actual model (unwrap if needed)
             actual_model = model.dit_model if hasattr(model, 'dit_model') else model
@@ -1210,7 +1213,7 @@ def apply_model_specific_config(model: torch.nn.Module, runner: VideoDiffusionIn
                     updated_count += 1
             
             if updated_count > 0:
-                debug.log(f"Applied {attention_mode} and compute_dtype={compute_dtype} to {updated_count} modules", category="success")
+                debug.log(f"已应用 {attention_mode} 注意力模式 和 compute_dtype={compute_dtype} 到 {updated_count} 个模块", category="success", force=True)
 
         # Apply BlockSwap before torch.compile (only if not already active)
         # BlockSwap wraps forward methods, and torch.compile needs to capture the wrapped version

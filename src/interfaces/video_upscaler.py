@@ -381,15 +381,9 @@ class SeedVR2VideoUpscaler(io.ComfyNode):
         debug.print_header()
 
         debug.start_timer("total_execution", force=True)
-
-        debug.log("━━━━━━━━━ Model Preparation ━━━━━━━━━", category="none")
-
-        # Initial memory state
-        debug.log_memory_state("Before model preparation", show_tensors=False, detailed_tensors=False)
         debug.start_timer("model_preparation")
 
-        # Check if download succeeded
-        debug.log("Checking and downloading models if needed...", category="download")
+        # Check if download succeeded (silent unless error)
         if not download_weight(dit_model=dit_model, vae_model=vae_model, debug=debug):
             raise RuntimeError(
                 f"Failed to download required model files. "
@@ -439,14 +433,12 @@ class SeedVR2VideoUpscaler(io.ComfyNode):
             # Store cache context in ctx for use in generation phases
             ctx['cache_context'] = cache_context
 
-            # Preload text embeddings before Phase 1 to avoid sync stall in Phase 2
+            # Preload text embeddings before Phase 1
             ctx['text_embeds'] = load_text_embeddings(script_directory, ctx['dit_device'], ctx['compute_dtype'], debug)
-            debug.log("Loaded text embeddings for DiT", category="dit")
 
-            debug.log_memory_state("After model preparation", show_tensors=False, detailed_tensors=False)
-            debug.end_timer("model_preparation", "Model preparation", force=True, show_breakdown=True)
-            
-            # Compute generation info and log start (handles prepending internally)
+            debug.end_timer("model_preparation", "模型准备")
+
+            # Compute generation info
             image, gen_info = compute_generation_info(
                 ctx=ctx,
                 images=image,
@@ -460,7 +452,10 @@ class SeedVR2VideoUpscaler(io.ComfyNode):
                 debug=debug
             )
             
-            # Log generation start in consistent format
+            # Store total frames for FPS in footer
+            debug.set_total_frames(gen_info['total_frames'])
+            
+            # Log generation start
             log_generation_start(gen_info, debug)
             
             debug.start_timer("generation")
@@ -514,65 +509,29 @@ class SeedVR2VideoUpscaler(io.ComfyNode):
             )
 
             sample = ctx['final_video']
-            debug.log("", category="none", force=True)
 
-            # Ensure CPU tensor in float32 for maximum ComfyUI compatibility
+            # Ensure CPU tensor in float32 for ComfyUI compatibility
             if torch.is_tensor(sample):
                 if sample.is_cuda or sample.is_mps:
                     sample = sample.cpu()
                 if sample.dtype != torch.float32:
-                    src_dtype = sample.dtype
-                    try:
-                        sample = sample.to(torch.float32)
-                        debug.log(f"Converted output from {src_dtype} to float32", category="precision")
-                    except Exception as e:
-                        debug.log(f"Could not convert to float32: {e}. Output is {src_dtype}, compatibility with other nodes not guaranteed", 
-                                  level="WARNING", category="precision", force=True)
+                    sample = sample.to(torch.float32)
 
-            debug.log("Upscaling completed successfully!", category="success", force=True)
-            debug.end_timer("generation", "Video generation")
+            debug.end_timer("generation", "图像生成")
 
             # Final cleanup
             debug.start_timer("final_cleanup")
             cleanup(dit_cache=dit_cache, vae_cache=vae_cache)
-            debug.end_timer("final_cleanup", "Final cleanup")
+            debug.end_timer("final_cleanup", "最后清理")
 
-            debug.log_memory_state("After all phases complete", show_tensors=False, detailed_tensors=False)
-            
-            # Final peak vram summary
-            debug.log_peak_memory_summary()
-
-            # Final timing summary
-            debug.log("", category="none")
-            debug.log("────────────────────────", category="none")
-            child_times = {
-                "Model preparation": debug.timer_durations.get("model_preparation", 0),
-                "Video generation": debug.timer_durations.get("generation", 0),
-                "Final cleanup": debug.timer_durations.get("final_cleanup", 0)
-            }
-            if "phase1_encoding" in debug.timer_durations:
-                child_times["  Phase 1: VAE encoding"] = debug.timer_durations.get("phase1_encoding", 0)
-            if "phase2_upscaling" in debug.timer_durations:
-                child_times["  Phase 2: DiT upscaling"] = debug.timer_durations.get("phase2_upscaling", 0)
-            if "phase3_decoding" in debug.timer_durations:
-                child_times["  Phase 3: VAE decoding"] = debug.timer_durations.get("phase3_decoding", 0)
-            if "phase4_postprocessing" in debug.timer_durations:
-                child_times["  Phase 4: Post-processing"] = debug.timer_durations.get("phase4_postprocessing", 0)
-
-            total_execution_time = debug.end_timer("total_execution", "Total execution", show_breakdown=True, custom_children=child_times)
-            
-            if total_execution_time > 0:
-                fps = gen_info['total_frames'] / total_execution_time
-                debug.log(f"Average FPS: {fps:.2f} frames/sec", category="timing", force=True)
-
-            # Print footer
+            # End total timer and print footer
+            debug.end_timer("total_execution")
             debug.print_footer()
 
             debug.clear_history()
             pbar = None
             ctx = None
 
-            # V3-compatible return with optional UI preview
             return io.NodeOutput(sample)
             
         except Exception as e:

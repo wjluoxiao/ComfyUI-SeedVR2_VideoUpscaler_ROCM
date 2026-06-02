@@ -444,7 +444,7 @@ def prepare_model_structure(
     model_config = config.dit.model if is_dit else config.vae.model
     
     # Always create on meta device for zero memory usage
-    debug.log(f"Creating {model_type_upper} model structure on meta device", 
+    debug.log(f"创建 {model_type_upper} 模型结构 (meta 设备)", 
              category=model_type, force=True)
     debug.start_timer(f"{model_type}_structure")
     
@@ -569,9 +569,9 @@ def _load_model_weights(model: torch.nn.Module, checkpoint_path: str, target_dev
     model_type_lower = model_type.lower()
     
     # Log loading action
-    action = "Materializing" if used_meta else "Loading"
+    action = "加载" if used_meta else "加载"
     target_device_str = str(target_device).upper()
-    debug.log(f"{action} {model_type} weights to {target_device_str}{cpu_reason}: {checkpoint_path}", 
+    debug.log(f"{action} {model_type} 权重到 {target_device_str}{cpu_reason}: {checkpoint_path}", 
              category=model_type_lower, force=True)
     
     # Load state dict from file

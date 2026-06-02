@@ -102,19 +102,17 @@ class SeedVR2LoadDiTModel(io.ComfyNode):
                     )
                 ),
                 io.Combo.Input("attention_mode",
-                    options=["sdpa", "flash_attn_2", "flash_attn_3", "sageattn_2", "sageattn_3"],
+                    options=["sdpa", "XB 内置模式 A (128x128x32)", "XB 内置模式 B (128x64x96)", "XB 内置模式 C (128x16x16)", "XB 内置模式 D (64x64x16)", "XB 自定模式 A (机智启动器)", "XB 自定模式 B (机智启动器)", "XB 自定模式 C (机智启动器)"],
                     default="sdpa",
                     optional=True,
                     tooltip=(
-                        "Attention computation backend:\n"
+                        "Attention computation backend (powered by XB_ToolBox SageAttention presets):\n"
                         "• sdpa: PyTorch scaled_dot_product_attention (default, stable, always available)\n"
-                        "• flash_attn_2: Flash Attention 2 (Ampere+, requires flash-attn package)\n"
-                        "• flash_attn_3: Flash Attention 3 (Hopper+, requires flash-attn with FA3 support)\n"
-                        "• sageattn_2: SageAttention 2 (requires sageattention package)\n"
-                        "• sageattn_3: SageAttention 3 (Blackwell/RTX 50xx only, requires sageattn3 package)\n"
+                        "• XB 内置模式 A-D: XB_ToolBox built-in SageAttention kernel presets\n"
+                        "• XB 自定模式 A-C: XB_ToolBox custom SageAttention kernel presets\n"
                         "\n"
-                        "SDPA is recommended - stable and works everywhere.\n"
-                        "Flash Attention and SageAttention provide speedup through optimized CUDA kernels on compatible GPUs."
+                        "SageAttention presets require XB_ToolBox and sageattention package.\n"
+                        "SDPA is recommended as fallback - stable and works everywhere."
                     )
                 ),
                 io.Custom("TORCH_COMPILE_ARGS").Input("torch_compile_args",
@@ -147,7 +145,7 @@ class SeedVR2LoadDiTModel(io.ComfyNode):
             cache_model: Whether to keep model loaded between runs
             blocks_to_swap: Number of transformer blocks to swap (requires offload_device != device)
             swap_io_components: Whether to offload I/O components (requires offload_device != device)
-            attention_mode: Attention computation backend ('sdpa', 'flash_attn_2', 'flash_attn_3', 'sageattn_2', or 'sageattn_3')
+            attention_mode: Attention computation backend ('sdpa' or XB_ToolBox SageAttention preset)
             torch_compile_args: Optional torch.compile configuration from settings node
             
         Returns:
